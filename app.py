@@ -1,6 +1,6 @@
 # app.py
 import os
-from datetime import datetime
+from datetime import datetime, date
 
 import pandas as pd
 import streamlit as st
@@ -33,8 +33,12 @@ def make_input_key(day: str, period: str, class_name: str, version: int) -> str:
     return f"progress_{day}_{period}_{class_name}_v{version}"
 
 
+def make_date_key(day: str, version: int) -> str:
+    return f"lesson_date_{day}_v{version}"
+
+
 def create_empty_log_df() -> pd.DataFrame:
-    return pd.DataFrame(columns=["기록일시", "요일", "교시", "반", "진도"])
+    return pd.DataFrame(columns=["수업날짜", "기록일시", "요일", "교시", "반", "진도"])
 
 
 def load_log_data() -> pd.DataFrame:
@@ -45,11 +49,19 @@ def load_log_data() -> pd.DataFrame:
 
     try:
         df = pd.read_csv(SAVE_FILE, dtype=str).fillna("")
-        required_cols = {"기록일시", "요일", "교시", "반", "진도"}
+        required_cols = {"수업날짜", "기록일시", "요일", "교시", "반", "진도"}
+
+        # 예전 파일 호환 처리
+        if "수업날짜" not in df.columns and {"기록일시", "요일", "교시", "반", "진도"}.issubset(df.columns):
+            df["수업날짜"] = ""
+            df = df[["수업날짜", "기록일시", "요일", "교시", "반", "진도"]]
+            save_log_data(df)
+
         if not required_cols.issubset(df.columns):
             df = create_empty_log_df()
             df.to_csv(SAVE_FILE, index=False, encoding="utf-8-sig")
         return df
+
     except Exception:
         df = create_empty_log_df()
         df.to_csv(SAVE_FILE, index=False, encoding="utf-8-sig")
@@ -65,25 +77,36 @@ def get_sorted_log_df(df: pd.DataFrame) -> pd.DataFrame:
         return df.copy()
 
     temp_df = df.copy()
-    temp_df["__sort_dt"] = pd.to_datetime(temp_df["기록일시"], errors="coerce")
-    temp_df = temp_df.sort_values(by="__sort_dt", ascending=False).drop(columns="__sort_dt")
+    temp_df["__sort_lesson_date"] = pd.to_datetime(temp_df["수업날짜"], errors="coerce")
+    temp_df["__sort_record_dt"] = pd.to_datetime(temp_df["기록일시"], errors="coerce")
+
+    # 수업날짜 최신순, 같은 날짜면 기록일시 최신순
+    temp_df = temp_df.sort_values(
+        by=["__sort_lesson_date", "__sort_record_dt"],
+        ascending=[False, False]
+    ).drop(columns=["__sort_lesson_date", "__sort_record_dt"])
+
     return temp_df
 
 
 def get_latest_day_view(df: pd.DataFrame, day: str) -> pd.DataFrame:
     if df.empty:
-        return pd.DataFrame(columns=["교시", "반", "최근 저장 진도", "기록일시"])
+        return pd.DataFrame(columns=["교시", "반", "최근 저장 진도", "수업날짜", "기록일시"])
 
     day_df = df[df["요일"] == day].copy()
     if day_df.empty:
-        return pd.DataFrame(columns=["교시", "반", "최근 저장 진도", "기록일시"])
+        return pd.DataFrame(columns=["교시", "반", "최근 저장 진도", "수업날짜", "기록일시"])
 
-    day_df["__sort_dt"] = pd.to_datetime(day_df["기록일시"], errors="coerce")
-    day_df = day_df.sort_values(by="__sort_dt", ascending=False)
+    day_df["__sort_lesson_date"] = pd.to_datetime(day_df["수업날짜"], errors="coerce")
+    day_df["__sort_record_dt"] = pd.to_datetime(day_df["기록일시"], errors="coerce")
+    day_df = day_df.sort_values(
+        by=["__sort_lesson_date", "__sort_record_dt"],
+        ascending=[False, False]
+    )
 
     latest_df = (
         day_df.groupby(["교시", "반"], as_index=False)
-        .first()[["교시", "반", "진도", "기록일시"]]
+        .first()[["교시", "반", "진도", "수업날짜", "기록일시"]]
         .rename(columns={"진도": "최근 저장 진도"})
     )
 
@@ -117,8 +140,19 @@ def save_day_progress(day: str) -> None:
     current_version = st.session_state["input_versions"][day]
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
 
+    date_key = make_date_key(day, current_version)
+    selected_lesson_date = st.session_state.get(date_key, date.today())
+
+    # date_input 반환값 안전 처리
+    if isinstance(selected_lesson_date, datetime):
+        lesson_date_str = selected_lesson_date.strftime("%Y-%m-%d")
+    elif isinstance(selected_lesson_date, date):
+        lesson_date_str = selected_lesson_date.strftime("%Y-%m-%d")
+    else:
+        lesson_date_str = str(selected_lesson_date)
+
     rows_to_add = []
-    used_keys = []
+    used_keys = [date_key]
 
     for period, class_name in TIMETABLE[day]:
         key = make_input_key(day, period, class_name, current_version)
@@ -128,6 +162,7 @@ def save_day_progress(day: str) -> None:
         if progress_text:
             rows_to_add.append(
                 {
+                    "수업날짜": lesson_date_str,
                     "기록일시": current_time,
                     "요일": day,
                     "교시": period,
@@ -157,7 +192,10 @@ def save_day_progress(day: str) -> None:
     st.session_state["input_versions"][day] += 1
 
     # 메시지 저장
-    st.session_state["save_message"] = f"{day}요일 진도 {len(rows_to_add)}건이 저장되었습니다."
+    st.session_state["save_message"] = (
+        f"{day}요일 진도 {len(rows_to_add)}건이 저장되었습니다. "
+        f"(수업날짜: {lesson_date_str})"
+    )
     st.session_state["save_message_type"] = "success"
 
     # 페이지 새로고침
@@ -225,14 +263,26 @@ for idx, day in enumerate(DAYS):
 
         st.markdown('<div class="block-wrap">', unsafe_allow_html=True)
 
+        current_version = st.session_state["input_versions"][day]
+        date_key = make_date_key(day, current_version)
+
+        if date_key not in st.session_state:
+            st.session_state[date_key] = date.today()
+
+        st.date_input(
+            "수업 날짜 선택",
+            key=date_key,
+            value=st.session_state[date_key],
+        )
+
+        st.markdown("")
+
         header_cols = st.columns([1.2, 1.3, 4.8])
         header_cols[0].markdown('<div class="table-header">교시</div>', unsafe_allow_html=True)
         header_cols[1].markdown('<div class="table-header">반</div>', unsafe_allow_html=True)
         header_cols[2].markdown('<div class="table-header">오늘 나간 진도</div>', unsafe_allow_html=True)
 
         st.markdown("---")
-
-        current_version = st.session_state["input_versions"][day]
 
         for period, class_name in TIMETABLE[day]:
             key = make_input_key(day, period, class_name, current_version)
@@ -257,7 +307,6 @@ for idx, day in enumerate(DAYS):
 
         st.markdown("</div>", unsafe_allow_html=True)
 
-        # 최근 저장 내용 보기
         day_log_df = load_log_data()
         with st.expander("최근 저장된 내용 보기", expanded=False):
             latest_day_df = get_latest_day_view(day_log_df, day)
@@ -279,7 +328,7 @@ if sorted_log_df.empty:
     st.info("아직 저장된 기록이 없습니다.")
 else:
     st.dataframe(
-        sorted_log_df[["기록일시", "요일", "교시", "반", "진도"]],
+        sorted_log_df[["수업날짜", "기록일시", "요일", "교시", "반", "진도"]],
         use_container_width=True,
         hide_index=True,
     )
