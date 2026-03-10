@@ -25,40 +25,41 @@ TIMETABLE = {
 
 DAYS = ["월", "화", "수", "목", "금"]
 
-
 # -----------------------------
-# 데이터 함수
+# 유틸 함수
 # -----------------------------
-def create_empty_log_df():
-    return pd.DataFrame(columns=["기록일시", "요일", "교시", "반", "진도"])
-
-
-def load_log_data():
-    if os.path.exists(SAVE_FILE):
-        try:
-            df = pd.read_csv(SAVE_FILE, dtype=str).fillna("")
-            required_cols = {"기록일시", "요일", "교시", "반", "진도"}
-            if not required_cols.issubset(df.columns):
-                df = create_empty_log_df()
-                save_log_data(df)
-        except Exception:
-            df = create_empty_log_df()
-            save_log_data(df)
-    else:
-        df = create_empty_log_df()
-        save_log_data(df)
-    return df
-
-
-def save_log_data(df):
-    df.to_csv(SAVE_FILE, index=False, encoding="utf-8-sig")
-
-
-def make_input_key(day, period, class_name):
+def make_input_key(day: str, period: str, class_name: str) -> str:
     return f"progress_{day}_{period}_{class_name}"
 
 
-def init_input_states():
+def create_empty_log_df() -> pd.DataFrame:
+    return pd.DataFrame(columns=["기록 일시", "요일", "교시", "반", "진도"])
+
+
+def load_log_data() -> pd.DataFrame:
+    if os.path.exists(SAVE_FILE):
+        try:
+            df = pd.read_csv(SAVE_FILE, dtype=str).fillna("")
+            required_cols = {"기록 일시", "요일", "교시", "반", "진도"}
+            if not required_cols.issubset(df.columns):
+                df = create_empty_log_df()
+                save_log_data(df)
+            return df
+        except Exception:
+            df = create_empty_log_df()
+            save_log_data(df)
+            return df
+    else:
+        df = create_empty_log_df()
+        save_log_data(df)
+        return df
+
+
+def save_log_data(df: pd.DataFrame) -> None:
+    df.to_csv(SAVE_FILE, index=False, encoding="utf-8-sig")
+
+
+def ensure_input_keys() -> None:
     for day, classes in TIMETABLE.items():
         for period, class_name in classes:
             key = make_input_key(day, period, class_name)
@@ -66,79 +67,95 @@ def init_input_states():
                 st.session_state[key] = ""
 
 
-def clear_day_inputs(day):
-    for period, class_name in TIMETABLE[day]:
-        key = make_input_key(day, period, class_name)
-        st.session_state[key] = ""
-
-
-def get_day_entries(day):
-    rows = []
+def save_day_progress(day: str) -> int:
+    """
+    해당 요일 탭의 입력값을 읽어 CSV에 저장하고,
+    저장된 입력창을 초기화한 뒤 rerun하도록 준비한다.
+    반환값: 저장된 행 수
+    """
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
+    rows_to_add = []
 
     for period, class_name in TIMETABLE[day]:
         key = make_input_key(day, period, class_name)
         progress_text = st.session_state.get(key, "").strip()
 
         if progress_text:
-            rows.append(
+            rows_to_add.append(
                 {
-                    "기록일시": current_time,
+                    "기록 일시": current_time,
                     "요일": day,
                     "교시": period,
                     "반": class_name,
                     "진도": progress_text,
                 }
             )
-    return rows
+
+    if not rows_to_add:
+        return 0
+
+    existing_df = load_log_data()
+    new_df = pd.DataFrame(rows_to_add)
+    updated_df = pd.concat([existing_df, new_df], ignore_index=True)
+    save_log_data(updated_df)
+
+    # 저장 후 입력창 초기화
+    for period, class_name in TIMETABLE[day]:
+        key = make_input_key(day, period, class_name)
+        st.session_state[key] = ""
+
+    return len(rows_to_add)
 
 
-def get_sorted_log_df(df):
+def get_sorted_log_df(df: pd.DataFrame) -> pd.DataFrame:
     if df.empty:
         return df.copy()
 
     temp_df = df.copy()
-    temp_df["정렬용일시"] = pd.to_datetime(temp_df["기록일시"], errors="coerce")
-    temp_df = temp_df.sort_values(by="정렬용일시", ascending=False)
-    temp_df = temp_df.drop(columns=["정렬용일시"])
+    temp_df["__sort_dt"] = pd.to_datetime(temp_df["기록 일시"], errors="coerce")
+    temp_df = temp_df.sort_values(by="__sort_dt", ascending=False)
+    temp_df = temp_df.drop(columns="__sort_dt")
     return temp_df
 
 
-def get_latest_saved_for_day(df, day):
+def get_latest_day_view(df: pd.DataFrame, day: str) -> pd.DataFrame:
+    """
+    해당 요일에서 각 [교시, 반]별 가장 최근 저장 내용만 보여주는 표
+    """
     if df.empty:
-        return pd.DataFrame(columns=["교시", "반", "최근 저장 진도", "기록일시"])
+        return pd.DataFrame(columns=["교시", "반", "최근 진도", "기록 일시"])
 
     day_df = df[df["요일"] == day].copy()
     if day_df.empty:
-        return pd.DataFrame(columns=["교시", "반", "최근 저장 진도", "기록일시"])
+        return pd.DataFrame(columns=["교시", "반", "최근 진도", "기록 일시"])
 
-    day_df["정렬용일시"] = pd.to_datetime(day_df["기록일시"], errors="coerce")
-    day_df = day_df.sort_values(by="정렬용일시", ascending=False)
+    day_df["__sort_dt"] = pd.to_datetime(day_df["기록 일시"], errors="coerce")
+    day_df = day_df.sort_values(by="__sort_dt", ascending=False)
 
-    latest_rows = (
+    latest_df = (
         day_df.groupby(["교시", "반"], as_index=False)
-        .first()[["교시", "반", "진도", "기록일시"]]
-        .rename(columns={"진도": "최근 저장 진도"})
+        .first()[["교시", "반", "진도", "기록 일시"]]
+        .rename(columns={"진도": "최근 진도"})
     )
 
     period_order = {
         "1교시": 1, "2교시": 2, "3교시": 3,
         "4교시": 4, "5교시": 5, "6교시": 6, "7교시": 7
     }
-    latest_rows["교시순서"] = latest_rows["교시"].map(period_order)
-    latest_rows = latest_rows.sort_values(by="교시순서").drop(columns=["교시순서"])
+    latest_df["__period_order"] = latest_df["교시"].map(period_order)
+    latest_df = latest_df.sort_values(by="__period_order").drop(columns="__period_order")
 
-    return latest_rows
+    return latest_df
 
 
 # -----------------------------
 # 초기화
 # -----------------------------
-if "initialized" not in st.session_state:
-    st.session_state.initialized = True
-    st.session_state.log_df = load_log_data()
+ensure_input_keys()
 
-init_input_states()
+# 저장 완료 메시지 표시용
+if "save_message" not in st.session_state:
+    st.session_state["save_message"] = ""
 
 # -----------------------------
 # 스타일
@@ -155,15 +172,16 @@ st.markdown(
         color: #666666;
         margin-bottom: 1rem;
     }
-    .small-note {
-        font-size: 0.9rem;
-        color: #666666;
+    .table-header {
+        font-weight: 700;
+        padding-bottom: 0.35rem;
     }
-    div[data-testid="stForm"] {
+    .block-wrap {
         padding: 1rem;
-        border: 1px solid #ececec;
+        border: 1px solid #e9ecef;
         border-radius: 12px;
         background-color: #fafafa;
+        margin-bottom: 1rem;
     }
     </style>
     """,
@@ -171,89 +189,93 @@ st.markdown(
 )
 
 # -----------------------------
-# 상단 제목
+# 제목
 # -----------------------------
 st.markdown('<div class="main-title">📚 주간 수업 진도 체크</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-text">요일별 시간표를 확인하고, 수업 진도를 기록한 뒤 저장하세요.</div>',
+    '<div class="sub-text">요일별 시간표를 확인하고 오늘 나간 진도를 기록하세요.</div>',
     unsafe_allow_html=True
 )
 
+if st.session_state["save_message"]:
+    st.success(st.session_state["save_message"])
+    st.session_state["save_message"] = ""
+
 # -----------------------------
-# 탭
+# 탭 UI
 # -----------------------------
 tabs = st.tabs(DAYS)
 
-for i, day in enumerate(DAYS):
-    with tabs[i]:
-        st.markdown(f"### {day}요일 시간표")
+for idx, day in enumerate(DAYS):
+    with tabs[idx]:
+        st.markdown(f"### {day}요일")
 
-        with st.form(f"form_{day}", clear_on_submit=False):
-            header_cols = st.columns([1.1, 1.2, 4])
-            header_cols[0].markdown("**교시**")
-            header_cols[1].markdown("**반**")
-            header_cols[2].markdown("**오늘 나간 진도**")
+        st.markdown('<div class="block-wrap">', unsafe_allow_html=True)
 
-            st.markdown("---")
+        header_cols = st.columns([1.2, 1.3, 4.5])
+        header_cols[0].markdown('<div class="table-header">교시</div>', unsafe_allow_html=True)
+        header_cols[1].markdown('<div class="table-header">반</div>', unsafe_allow_html=True)
+        header_cols[2].markdown('<div class="table-header">오늘 나간 진도</div>', unsafe_allow_html=True)
 
-            for period, class_name in TIMETABLE[day]:
-                key = make_input_key(day, period, class_name)
-                cols = st.columns([1.1, 1.2, 4])
-                cols[0].write(period)
-                cols[1].write(class_name)
-                cols[2].text_input(
-                    label=f"{day} {period} {class_name}",
-                    key=key,
-                    label_visibility="collapsed",
-                    placeholder="예: 프랑스 혁명 서론"
-                )
+        st.markdown("---")
 
-            submitted = st.form_submit_button("저장하기", use_container_width=True)
+        for period, class_name in TIMETABLE[day]:
+            key = make_input_key(day, period, class_name)
+            cols = st.columns([1.2, 1.3, 4.5])
+            cols[0].write(period)
+            cols[1].write(class_name)
+            cols[2].text_input(
+                label=f"{day} {period} {class_name}",
+                key=key,
+                label_visibility="collapsed",
+                placeholder="예: 프랑스 혁명 서론",
+            )
 
-            if submitted:
-                new_rows = get_day_entries(day)
+        save_clicked = st.button(
+            f"{day}요일 저장하기",
+            key=f"save_btn_{day}",
+            use_container_width=True,
+        )
 
-                if new_rows:
-                    new_df = pd.DataFrame(new_rows)
-                    st.session_state.log_df = pd.concat(
-                        [st.session_state.log_df, new_df],
-                        ignore_index=True
-                    )
-                    save_log_data(st.session_state.log_df)
+        st.markdown("</div>", unsafe_allow_html=True)
 
-                    # 저장 후 입력창 초기화
-                    clear_day_inputs(day)
+        if save_clicked:
+            saved_count = save_day_progress(day)
+            if saved_count > 0:
+                st.session_state["save_message"] = f"{day}요일 진도 {saved_count}건이 저장되었습니다."
+                st.rerun()
+            else:
+                st.warning("저장할 진도 내용이 없습니다.")
 
-                    st.success(f"{day}요일 진도가 저장되었습니다. 입력창도 초기화되었습니다.")
-                else:
-                    st.warning("저장할 진도 내용이 없습니다.")
-
+        # 최근 저장 내용 보기
+        current_log_df = load_log_data()
         with st.expander("최근 저장된 내용 보기", expanded=False):
-            latest_day_df = get_latest_saved_for_day(st.session_state.log_df, day)
+            latest_day_df = get_latest_day_view(current_log_df, day)
             if latest_day_df.empty:
                 st.info("아직 저장된 기록이 없습니다.")
             else:
                 st.dataframe(latest_day_df, use_container_width=True, hide_index=True)
 
 # -----------------------------
-# 전체 기록
+# 전체 주간 기록
 # -----------------------------
 st.markdown("---")
 st.markdown("### 전체 주간 기록")
 
-sorted_log_df = get_sorted_log_df(st.session_state.log_df)
+log_df = load_log_data()
+sorted_log_df = get_sorted_log_df(log_df)
 
 if sorted_log_df.empty:
-    st.info("아직 저장된 전체 기록이 없습니다.")
+    st.info("아직 저장된 기록이 없습니다.")
 else:
     st.dataframe(
-        sorted_log_df[["기록일시", "요일", "교시", "반", "진도"]],
+        sorted_log_df[["기록 일시", "요일", "교시", "반", "진도"]],
         use_container_width=True,
-        hide_index=True
+        hide_index=True,
     )
 
 # -----------------------------
-# CSV 다운로드
+# 다운로드
 # -----------------------------
 csv_data = sorted_log_df.to_csv(index=False, encoding="utf-8-sig").encode("utf-8-sig")
 st.download_button(
