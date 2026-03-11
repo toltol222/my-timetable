@@ -33,6 +33,17 @@ for day, items in TIMETABLE.items():
     for period, class_name in items:
         CLASS_MAP[(day, period)] = class_name
 
+
+# -------------------------------------------------
+# 오늘 요일 기본 탭 계산
+# -------------------------------------------------
+def get_default_day_tab() -> str:
+    weekday_idx = datetime.now().weekday()  # 월=0 ... 일=6
+    if 0 <= weekday_idx <= 4:
+        return DAYS[weekday_idx]
+    return "월"
+
+
 # -------------------------------------------------
 # 키 생성
 # -------------------------------------------------
@@ -264,10 +275,6 @@ def build_goal_summary(week_df: pd.DataFrame) -> dict:
 
 
 def build_timetable_cells(week_df: pd.DataFrame) -> dict:
-    """
-    각 셀의 상태와 내용을 dict로 반환
-    status: class / todo / homeroom / empty
-    """
     cells = {}
     for day in DAYS:
         for row_name in ROW_ORDER:
@@ -542,6 +549,9 @@ if "save_message_type" not in st.session_state:
 if "selected_week_start" not in st.session_state:
     st.session_state["selected_week_start"] = get_monday(date.today())
 
+if "active_tab" not in st.session_state:
+    st.session_state["active_tab"] = get_default_day_tab()
+
 
 # -------------------------------------------------
 # 저장 콜백
@@ -619,6 +629,7 @@ def save_day_planner(day: str) -> None:
     if not rows_to_add:
         st.session_state["save_message"] = f"{day}요일은 저장할 내용이 없습니다."
         st.session_state["save_message_type"] = "warning"
+        st.session_state["active_tab"] = day
         st.rerun()
 
     existing_df = load_log_data()
@@ -627,6 +638,7 @@ def save_day_planner(day: str) -> None:
     save_log_data(updated_df)
 
     st.session_state["selected_week_start"] = get_monday(selected_lesson_date)
+    st.session_state["active_tab"] = day
 
     for key in used_keys:
         if key in st.session_state:
@@ -783,7 +795,11 @@ selected_week_df = filter_df_by_week(prepared_df, selected_week_start)
 # -------------------------------------------------
 # 입력 탭
 # -------------------------------------------------
-tabs = st.tabs(DAYS)
+tabs = st.tabs(
+    DAYS,
+    default=st.session_state["active_tab"],
+    key="planner_day_tabs",
+)
 
 for idx, day in enumerate(DAYS):
     with tabs[idx]:
