@@ -38,8 +38,12 @@ def make_date_key(day: str, version: int) -> str:
     return f"lesson_date_{day}_v{version}"
 
 
+def make_memo_key(day: str, version: int) -> str:
+    return f"memo_{day}_v{version}"
+
+
 def create_empty_log_df() -> pd.DataFrame:
-    return pd.DataFrame(columns=["수업날짜", "기록일시", "요일", "교시", "반", "진도"])
+    return pd.DataFrame(columns=["수업날짜", "기록일시", "요일", "교시", "반", "진도", "메모"])
 
 
 def save_log_data(df: pd.DataFrame) -> None:
@@ -59,11 +63,14 @@ def load_log_data() -> pd.DataFrame:
         save_log_data(df)
         return df
 
-    # 예전 파일 호환
-    required_cols = ["수업날짜", "기록일시", "요일", "교시", "반", "진도"]
+    required_cols = ["수업날짜", "기록일시", "요일", "교시", "반", "진도", "메모"]
 
+    # 예전 파일 호환
     if "수업날짜" not in df.columns and {"기록일시", "요일", "교시", "반", "진도"}.issubset(df.columns):
         df["수업날짜"] = ""
+
+    if "메모" not in df.columns:
+        df["메모"] = ""
 
     for col in required_cols:
         if col not in df.columns:
@@ -152,29 +159,34 @@ def filter_df_by_week(df: pd.DataFrame, week_start: date) -> pd.DataFrame:
 
 def get_weekly_list_df(week_df: pd.DataFrame) -> pd.DataFrame:
     if week_df.empty:
-        return pd.DataFrame(columns=["수업날짜", "요일", "교시", "학급", "진도내용"])
+        return pd.DataFrame(columns=["수업날짜", "요일", "교시", "학급", "진도내용", "메모"])
 
     temp = week_df.sort_values(
         by=["수업날짜_dt", "기록일시_dt"],
         ascending=[False, False]
     ).copy()
 
-    display_df = temp[["수업날짜", "요일", "교시", "반", "진도"]].rename(
+    display_df = temp[["수업날짜", "요일", "교시", "반", "진도", "메모"]].rename(
         columns={"반": "학급", "진도": "진도내용"}
     )
     return display_df.reset_index(drop=True)
 
 
+def truncate_text(text: str, max_len: int = 22) -> str:
+    text = str(text).strip()
+    if len(text) <= max_len:
+        return text
+    return text[:max_len] + "…"
+
+
 def build_timetable_grid(week_df: pd.DataFrame) -> pd.DataFrame:
     """
     이미지와 같은 7x5 시간표 생성.
-    기본적으로 시간표의 학급명을 채워두고,
-    선택 주차에 기록된 진도가 있으면 '학급명 + 진도'를 표시.
-    동일 요일/교시 여러 기록이면 가장 최근 기록만 반영.
+    기본 시간표 학급명을 채워두고,
+    선택 주차에 기록된 진도/메모가 있으면 가장 최근 기록을 반영.
     """
     grid = pd.DataFrame("", index=PERIODS, columns=DAYS)
 
-    # 기본 시간표 학급 배치
     for day, lessons in TIMETABLE.items():
         for period, class_name in lessons:
             grid.at[period, day] = class_name
@@ -194,12 +206,18 @@ def build_timetable_grid(week_df: pd.DataFrame) -> pd.DataFrame:
         period = str(row["교시"]).strip()
         class_name = str(row["반"]).strip()
         progress = str(row["진도"]).strip()
+        memo = str(row["메모"]).strip()
 
         if day in DAYS and period in PERIODS:
+            parts = [f"<div class='class-name'>{class_name}</div>"]
+
             if progress:
-                grid.at[period, day] = f"{class_name}<br><span class='progress-text'>{progress}</span>"
-            else:
-                grid.at[period, day] = class_name
+                parts.append(f"<div class='progress-text'>{progress}</div>")
+
+            if memo:
+                parts.append(f"<div class='memo-text'>메모: {truncate_text(memo, 18)}</div>")
+
+            grid.at[period, day] = "".join(parts)
 
     return grid
 
@@ -239,27 +257,35 @@ def render_timetable_html(grid: pd.DataFrame) -> str:
         background: #d9d9d9;
         font-size: 1.8rem;
         font-weight: 500;
-        height: 72px;
+        height: 90px;
     }
     .tt .cell {
         background: #eeeeee;
-        height: 72px;
+        height: 90px;
         padding: 6px 8px;
-        font-size: 1.15rem;
-        line-height: 1.35;
-        font-weight: 500;
+        font-size: 1rem;
+        line-height: 1.25;
         word-break: keep-all;
         white-space: normal;
     }
     .tt .empty-cell {
         color: transparent;
     }
+    .tt .class-name {
+        font-size: 1.15rem;
+        font-weight: 600;
+        color: #222;
+    }
     .tt .progress-text {
-        display: block;
         margin-top: 4px;
-        font-size: 0.92rem;
+        font-size: 0.9rem;
         font-weight: 400;
         color: #303030;
+    }
+    .tt .memo-text {
+        margin-top: 4px;
+        font-size: 0.82rem;
+        color: #5a5a5a;
     }
     </style>
     <div class="tt-wrap">
@@ -318,13 +344,16 @@ if "selected_week_start" not in st.session_state:
 def save_day_progress(day: str) -> None:
     current_version = st.session_state["input_versions"][day]
     date_key = make_date_key(day, current_version)
+    memo_key = make_memo_key(day, current_version)
+
     selected_lesson_date = to_date_safe(st.session_state.get(date_key, date.today()))
+    memo_text = str(st.session_state.get(memo_key, "")).strip()
 
     current_time = datetime.now().strftime("%Y-%m-%d %H:%M")
     lesson_date_str = selected_lesson_date.strftime("%Y-%m-%d")
 
     rows_to_add = []
-    used_keys = [date_key]
+    used_keys = [date_key, memo_key]
 
     for period, class_name in TIMETABLE[day]:
         key = make_input_key(day, period, class_name, current_version)
@@ -340,6 +369,7 @@ def save_day_progress(day: str) -> None:
                     "교시": period,
                     "반": class_name,
                     "진도": progress_text,
+                    "메모": memo_text,
                 }
             )
 
@@ -353,10 +383,8 @@ def save_day_progress(day: str) -> None:
     updated_df = pd.concat([existing_df, new_df], ignore_index=True)
     save_log_data(updated_df)
 
-    # 저장 후 해당 주차로 자동 이동
     st.session_state["selected_week_start"] = get_monday(selected_lesson_date)
 
-    # 입력창 초기화
     for key in used_keys:
         if key in st.session_state:
             del st.session_state[key]
@@ -407,7 +435,7 @@ st.markdown(
 # -------------------------------------------------
 st.markdown('<div class="main-title">📚 주간 수업 진도 체크</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-text">요일별 시간표를 확인하고 오늘 나간 진도를 기록하세요.</div>',
+    '<div class="sub-text">요일별 시간표를 확인하고 오늘 나간 진도와 종례 메모를 기록하세요.</div>',
     unsafe_allow_html=True
 )
 
@@ -457,11 +485,14 @@ for idx, day in enumerate(DAYS):
 
         current_version = st.session_state["input_versions"][day]
         date_key = make_date_key(day, current_version)
+        memo_key = make_memo_key(day, current_version)
 
         if date_key not in st.session_state:
-            # 기본값: 현재 조회 중인 주차의 해당 요일 날짜로 잡아주면 편함
             weekday_idx = DAYS.index(day)
             st.session_state[date_key] = selected_week_start + timedelta(days=weekday_idx)
+
+        if memo_key not in st.session_state:
+            st.session_state[memo_key] = ""
 
         st.date_input(
             "수업 날짜 선택",
@@ -490,6 +521,15 @@ for idx, day in enumerate(DAYS):
                 label_visibility="collapsed",
                 placeholder="예: 프랑스 혁명 서론",
             )
+
+        st.markdown("#### 종례 및 기타 메모")
+        st.text_area(
+            "종례 및 기타 메모",
+            key=memo_key,
+            label_visibility="collapsed",
+            height=120,
+            placeholder="예: 숙제 공지, 준비물 안내, 생활지도 사항, 특이사항 등을 기록하세요.",
+        )
 
         st.button(
             f"{day}요일 저장하기",
