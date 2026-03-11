@@ -33,11 +33,13 @@ for day, items in TIMETABLE.items():
     for period, class_name in items:
         CLASS_MAP[(day, period)] = class_name
 
+CORE_COLS = ["수업날짜", "기록일시", "요일", "구분", "교시", "반", "유형", "내용", "목표"]
+
 
 # -------------------------------------------------
-# 오늘 요일 기본 탭 계산
+# 오늘 요일 계산
 # -------------------------------------------------
-def get_default_day_tab() -> str:
+def get_current_day_tab() -> str:
     weekday_idx = datetime.now().weekday()  # 월=0 ... 일=6
     if 0 <= weekday_idx <= 4:
         return DAYS[weekday_idx]
@@ -60,17 +62,66 @@ def make_goal_key(day: str, version: int) -> str:
 
 
 # -------------------------------------------------
-# 데이터 처리
+# 날짜/주차 유틸
 # -------------------------------------------------
-CORE_COLS = ["수업날짜", "기록일시", "요일", "구분", "교시", "반", "유형", "내용", "목표"]
+def to_date_safe(value):
+    if isinstance(value, datetime):
+        return value.date()
+    if isinstance(value, date):
+        return value
+    try:
+        return pd.to_datetime(value).date()
+    except Exception:
+        return date.today()
 
 
+def get_monday(d: date) -> date:
+    return d - timedelta(days=d.weekday())
+
+
+def get_friday(d: date) -> date:
+    return get_monday(d) + timedelta(days=4)
+
+
+def get_week_of_month(d: date) -> int:
+    first_day = d.replace(day=1)
+    first_monday_offset = (7 - first_day.weekday()) % 7
+    first_monday = first_day + timedelta(days=first_monday_offset)
+
+    monday = get_monday(d)
+    if monday < first_monday:
+        return 1
+    return ((monday - first_monday).days // 7) + 2
+
+
+def format_week_label(week_start: date) -> str:
+    week_end = week_start + timedelta(days=4)
+    month_week = get_week_of_month(week_start)
+    return f"{week_start.year}년 {week_start.month}월 {month_week}주차 ({week_start:%m.%d}~{week_end:%m.%d})"
+
+
+# -------------------------------------------------
+# 파일 처리
+# -------------------------------------------------
 def create_empty_log_df() -> pd.DataFrame:
     return pd.DataFrame(columns=CORE_COLS)
 
 
-def save_log_data(df: pd.DataFrame) -> None:
-    df.to_csv(SAVE_FILE, index=False, encoding="utf-8-sig")
+def ensure_file_exists() -> None:
+    if not os.path.exists(SAVE_FILE):
+        create_empty_log_df().to_csv(SAVE_FILE, index=False, encoding="utf-8-sig")
+
+
+def append_rows_to_csv(new_df: pd.DataFrame) -> None:
+    ensure_file_exists()
+    has_header = os.path.getsize(SAVE_FILE) > 0
+    new_df.to_csv(
+        SAVE_FILE,
+        mode="a",
+        header=not has_header,
+        index=False,
+        encoding="utf-8-sig",
+    )
 
 
 def migrate_old_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -132,26 +183,22 @@ def migrate_old_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_log_data() -> pd.DataFrame:
-    if not os.path.exists(SAVE_FILE):
-        df = create_empty_log_df()
-        save_log_data(df)
-        return df
+    ensure_file_exists()
 
     try:
         raw = pd.read_csv(SAVE_FILE, dtype=str).fillna("")
     except Exception:
-        df = create_empty_log_df()
-        save_log_data(df)
-        return df
+        return create_empty_log_df()
+
+    if raw.empty:
+        return create_empty_log_df()
 
     if set(CORE_COLS).issubset(raw.columns):
-        df = raw[CORE_COLS].copy().fillna("")
-        save_log_data(df)
-        return df
+        return raw[CORE_COLS].copy().fillna("")
 
-    df = migrate_old_df(raw)
-    save_log_data(df)
-    return df
+    migrated = migrate_old_df(raw)
+    migrated.to_csv(SAVE_FILE, index=False, encoding="utf-8-sig")
+    return migrated
 
 
 def prepare_log_df(df: pd.DataFrame) -> pd.DataFrame:
@@ -165,40 +212,8 @@ def prepare_log_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # -------------------------------------------------
-# 날짜/주차 유틸
+# 데이터 가공
 # -------------------------------------------------
-def to_date_safe(value):
-    if isinstance(value, datetime):
-        return value.date()
-    if isinstance(value, date):
-        return value
-    try:
-        return pd.to_datetime(value).date()
-    except Exception:
-        return date.today()
-
-
-def get_monday(d: date) -> date:
-    return d - timedelta(days=d.weekday())
-
-
-def get_week_of_month(d: date) -> int:
-    first_day = d.replace(day=1)
-    first_monday_offset = (7 - first_day.weekday()) % 7
-    first_monday = first_day + timedelta(days=first_monday_offset)
-
-    monday = get_monday(d)
-    if monday < first_monday:
-        return 1
-    return ((monday - first_monday).days // 7) + 2
-
-
-def format_week_label(week_start: date) -> str:
-    week_end = week_start + timedelta(days=4)
-    month_week = get_week_of_month(week_start)
-    return f"{week_start.year}년 {week_start.month}월 {month_week}주차 ({week_start:%m.%d}~{week_end:%m.%d})"
-
-
 def get_available_week_starts(df: pd.DataFrame) -> list[date]:
     week_starts = []
 
@@ -227,20 +242,15 @@ def filter_df_by_week(df: pd.DataFrame, week_start: date) -> pd.DataFrame:
     return df.loc[mask].copy()
 
 
-# -------------------------------------------------
-# 표시용 데이터
-# -------------------------------------------------
 def get_cell_default_label(day: str, period: str) -> str:
     return CLASS_MAP.get((day, period), "")
 
 
-def get_weekly_list_df(week_df: pd.DataFrame) -> pd.DataFrame:
-    if week_df.empty:
-        return pd.DataFrame(
-            columns=["수업날짜", "요일", "구분", "교시", "학급", "유형", "목표", "내용"]
-        )
+def get_all_records_df(all_df: pd.DataFrame) -> pd.DataFrame:
+    if all_df.empty:
+        return pd.DataFrame(columns=["수업날짜", "요일", "구분", "교시", "학급", "유형", "목표", "내용"])
 
-    temp = week_df.sort_values(
+    temp = all_df.sort_values(
         by=["수업날짜_dt", "기록일시_dt"],
         ascending=[False, False]
     ).copy()
@@ -336,6 +346,9 @@ def build_timetable_cells(week_df: pd.DataFrame) -> dict:
     return cells
 
 
+# -------------------------------------------------
+# 렌더링
+# -------------------------------------------------
 def render_goal_summary_html(goal_summary: dict) -> str:
     html = """
     <style>
@@ -549,9 +562,6 @@ if "save_message_type" not in st.session_state:
 if "selected_week_start" not in st.session_state:
     st.session_state["selected_week_start"] = get_monday(date.today())
 
-if "active_tab" not in st.session_state:
-    st.session_state["active_tab"] = get_default_day_tab()
-
 
 # -------------------------------------------------
 # 저장 콜백
@@ -629,16 +639,12 @@ def save_day_planner(day: str) -> None:
     if not rows_to_add:
         st.session_state["save_message"] = f"{day}요일은 저장할 내용이 없습니다."
         st.session_state["save_message_type"] = "warning"
-        st.session_state["active_tab"] = day
         st.rerun()
 
-    existing_df = load_log_data()
     new_df = pd.DataFrame(rows_to_add, columns=CORE_COLS)
-    updated_df = pd.concat([existing_df, new_df], ignore_index=True)
-    save_log_data(updated_df)
+    append_rows_to_csv(new_df)
 
     st.session_state["selected_week_start"] = get_monday(selected_lesson_date)
-    st.session_state["active_tab"] = day
 
     for key in used_keys:
         if key in st.session_state:
@@ -797,8 +803,7 @@ selected_week_df = filter_df_by_week(prepared_df, selected_week_start)
 # -------------------------------------------------
 tabs = st.tabs(
     DAYS,
-    default=st.session_state["active_tab"],
-    key="planner_day_tabs",
+    default=get_current_day_tab(),
 )
 
 for idx, day in enumerate(DAYS):
@@ -900,18 +905,18 @@ cells = build_timetable_cells(selected_week_df)
 st.markdown(render_timetable_html(cells), unsafe_allow_html=True)
 
 # -------------------------------------------------
-# 선택 주차 리스트
+# 전체 기록 리스트: 날짜와 상관없이 전체 표시
 # -------------------------------------------------
 st.markdown("---")
-st.markdown("## 선택 주차 전체 기록")
+st.markdown("## 전체 기록")
 
-weekly_list_df = get_weekly_list_df(selected_week_df)
+all_records_df = get_all_records_df(prepared_df)
 
-if weekly_list_df.empty:
-    st.info("선택한 주차에 저장된 기록이 없습니다.")
+if all_records_df.empty:
+    st.info("저장된 기록이 없습니다.")
 else:
     st.dataframe(
-        weekly_list_df,
+        all_records_df,
         use_container_width=True,
         hide_index=True,
     )
