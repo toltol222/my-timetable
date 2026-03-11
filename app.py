@@ -1,6 +1,7 @@
 # app.py
 import os
 from datetime import date, datetime, timedelta
+
 import pandas as pd
 import streamlit as st
 
@@ -38,29 +39,30 @@ for day, items in TIMETABLE.items():
 def make_input_key(day: str, row_name: str, version: int) -> str:
     return f"content_{day}_{row_name}_v{version}"
 
+
 def make_date_key(day: str, version: int) -> str:
     return f"lesson_date_{day}_v{version}"
 
+
 def make_goal_key(day: str, version: int) -> str:
     return f"goal_{day}_v{version}"
+
 
 # -------------------------------------------------
 # 데이터 처리
 # -------------------------------------------------
 CORE_COLS = ["수업날짜", "기록일시", "요일", "구분", "교시", "반", "유형", "내용", "목표"]
 
+
 def create_empty_log_df() -> pd.DataFrame:
     return pd.DataFrame(columns=CORE_COLS)
+
 
 def save_log_data(df: pd.DataFrame) -> None:
     df.to_csv(SAVE_FILE, index=False, encoding="utf-8-sig")
 
+
 def migrate_old_df(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    기존 파일 호환:
-    - 예전 컬럼(진도, 메모 등)을 새 구조로 변환
-    - 기존 CSV 내용은 유지
-    """
     if df.empty:
         return create_empty_log_df()
 
@@ -117,6 +119,7 @@ def migrate_old_df(df: pd.DataFrame) -> pd.DataFrame:
     migrated = migrated.drop_duplicates()
     return migrated
 
+
 def load_log_data() -> pd.DataFrame:
     if not os.path.exists(SAVE_FILE):
         df = create_empty_log_df()
@@ -130,16 +133,15 @@ def load_log_data() -> pd.DataFrame:
         save_log_data(df)
         return df
 
-    # 이미 새 구조면 그대로 사용
     if set(CORE_COLS).issubset(raw.columns):
         df = raw[CORE_COLS].copy().fillna("")
         save_log_data(df)
         return df
 
-    # 예전 구조면 마이그레이션
     df = migrate_old_df(raw)
     save_log_data(df)
     return df
+
 
 def prepare_log_df(df: pd.DataFrame) -> pd.DataFrame:
     temp = df.copy()
@@ -149,6 +151,7 @@ def prepare_log_df(df: pd.DataFrame) -> pd.DataFrame:
         lambda x: get_monday(x) if pd.notna(x) else pd.NaT
     )
     return temp
+
 
 # -------------------------------------------------
 # 날짜/주차 유틸
@@ -163,8 +166,10 @@ def to_date_safe(value):
     except Exception:
         return date.today()
 
+
 def get_monday(d: date) -> date:
     return d - timedelta(days=d.weekday())
+
 
 def get_week_of_month(d: date) -> int:
     first_day = d.replace(day=1)
@@ -176,10 +181,12 @@ def get_week_of_month(d: date) -> int:
         return 1
     return ((monday - first_monday).days // 7) + 2
 
+
 def format_week_label(week_start: date) -> str:
     week_end = week_start + timedelta(days=4)
     month_week = get_week_of_month(week_start)
     return f"{week_start.year}년 {week_start.month}월 {month_week}주차 ({week_start:%m.%d}~{week_end:%m.%d})"
+
 
 def get_available_week_starts(df: pd.DataFrame) -> list[date]:
     week_starts = []
@@ -195,6 +202,7 @@ def get_available_week_starts(df: pd.DataFrame) -> list[date]:
 
     return sorted(set(week_starts), reverse=True)
 
+
 def filter_df_by_week(df: pd.DataFrame, week_start: date) -> pd.DataFrame:
     if df.empty:
         return df.copy()
@@ -207,11 +215,13 @@ def filter_df_by_week(df: pd.DataFrame, week_start: date) -> pd.DataFrame:
     )
     return df.loc[mask].copy()
 
+
 # -------------------------------------------------
 # 표시용 데이터
 # -------------------------------------------------
 def get_cell_default_label(day: str, period: str) -> str:
     return CLASS_MAP.get((day, period), "")
+
 
 def get_weekly_list_df(week_df: pd.DataFrame) -> pd.DataFrame:
     if week_df.empty:
@@ -229,16 +239,8 @@ def get_weekly_list_df(week_df: pd.DataFrame) -> pd.DataFrame:
     )
     return display_df.reset_index(drop=True)
 
-def truncate_text(text: str, max_len: int = 26) -> str:
-    text = str(text).strip()
-    if len(text) <= max_len:
-        return text
-    return text[:max_len] + "…"
 
 def build_goal_summary(week_df: pd.DataFrame) -> dict:
-    """
-    각 요일별 가장 최근 목표
-    """
     summary = {day: "" for day in DAYS}
     if week_df.empty:
         return summary
@@ -260,25 +262,25 @@ def build_goal_summary(week_df: pd.DataFrame) -> dict:
             summary[day] = goal
     return summary
 
-def build_timetable_grid(week_df: pd.DataFrame) -> pd.DataFrame:
-    """
-    8x5 표:
-    - 1~7교시 + 종례
-    - 수업 있는 칸: 학급명 + 진도
-    - 공강 칸: 할 일
-    - 종례 행: 종례 내용
-    - 같은 주차, 같은 요일/행 여러 기록이면 가장 최근 기록 사용
-    """
-    grid = pd.DataFrame("", index=ROW_ORDER, columns=DAYS)
 
-    # 기본 시간표 학급명 표시
+def build_timetable_cells(week_df: pd.DataFrame) -> dict:
+    """
+    각 셀의 상태와 내용을 dict로 반환
+    status: class / todo / homeroom / empty
+    """
+    cells = {}
     for day in DAYS:
-        for period in PERIODS:
-            class_name = get_cell_default_label(day, period)
-            grid.at[period, day] = class_name if class_name else ""
+        for row_name in ROW_ORDER:
+            default_class = get_cell_default_label(day, row_name) if row_name in PERIODS else ""
+            status = "class" if default_class else ("homeroom" if row_name == "종례" else "empty")
+            cells[(day, row_name)] = {
+                "status": status,
+                "class_name": default_class,
+                "content": "",
+            }
 
     if week_df.empty:
-        return grid
+        return cells
 
     temp = week_df.sort_values(
         by=["수업날짜_dt", "기록일시_dt"],
@@ -298,27 +300,34 @@ def build_timetable_grid(week_df: pd.DataFrame) -> pd.DataFrame:
             continue
 
         if row_name == "종례":
-            grid.at[row_name, day] = f"<div class='memo-text'>{content}</div>"
+            cells[(day, row_name)] = {
+                "status": "homeroom",
+                "class_name": "",
+                "content": content,
+            }
             continue
 
         if entry_type == "수업":
-            class_html = f"<div class='class-name'>{class_name}</div>" if class_name else ""
-            content_html = f"<div class='progress-text'>{content}</div>" if content else ""
-            grid.at[row_name, day] = class_html + content_html
+            cells[(day, row_name)] = {
+                "status": "class",
+                "class_name": class_name,
+                "content": content,
+            }
         elif entry_type == "할일":
-            if content:
-                grid.at[row_name, day] = f"<div class='todo-text'>할 일: {content}</div>"
+            cells[(day, row_name)] = {
+                "status": "todo",
+                "class_name": "",
+                "content": content,
+            }
         else:
-            # 혹시 예외 데이터가 있어도 내용은 보이게
-            if class_name:
-                grid.at[row_name, day] = (
-                    f"<div class='class-name'>{class_name}</div>"
-                    f"<div class='progress-text'>{content}</div>"
-                )
-            else:
-                grid.at[row_name, day] = f"<div class='todo-text'>{content}</div>"
+            cells[(day, row_name)] = {
+                "status": "class" if class_name else "todo",
+                "class_name": class_name,
+                "content": content,
+            }
 
-    return grid
+    return cells
+
 
 def render_goal_summary_html(goal_summary: dict) -> str:
     html = """
@@ -327,27 +336,31 @@ def render_goal_summary_html(goal_summary: dict) -> str:
         width: 100%;
         border-collapse: collapse;
         table-layout: fixed;
-        margin-bottom: 1rem;
+        margin-bottom: 1.2rem;
+        background: #FFFFFF;
     }
     .goal-table th, .goal-table td {
-        border: 1px solid #d0d6de;
-        padding: 8px 10px;
+        border: 1px solid #D8E6F5;
+        padding: 10px 12px;
         text-align: center;
         vertical-align: middle;
     }
     .goal-table th {
-        background: #eef3f8;
+        background: #EEF6FF;
+        color: #123A63;
         font-weight: 700;
     }
     .goal-title-cell {
         width: 120px;
-        background: #eef3f8;
+        background: #123A63;
+        color: #FFFFFF;
         font-weight: 700;
     }
     .goal-cell {
-        background: #fafcff;
+        background: #FFFFFF;
+        color: #123A63;
         font-size: 0.95rem;
-        line-height: 1.4;
+        line-height: 1.45;
         min-height: 52px;
     }
     </style>
@@ -360,80 +373,103 @@ def render_goal_summary_html(goal_summary: dict) -> str:
     html += "</tr><tr><td class='goal-title-cell'>내용</td>"
     for day in DAYS:
         value = str(goal_summary.get(day, "")).strip()
-        html += f"<td class='goal-cell'>{value if value else ''}</td>"
+        html += f"<td class='goal-cell'>{value}</td>"
     html += "</tr></table>"
     return html
 
-def render_timetable_html(grid: pd.DataFrame) -> str:
+
+def render_timetable_html(cells: dict) -> str:
     html = """
     <style>
-    .tt-wrap {
+    .planner-wrap {
         margin-top: 0.5rem;
         margin-bottom: 1.2rem;
     }
-    .tt {
+    .planner-table {
         width: 100%;
         border-collapse: collapse;
         table-layout: fixed;
-        border: 1px solid #8f8f8f;
-        background: white;
+        border: 1px solid #D8E6F5;
+        background: #FFFFFF;
     }
-    .tt th, .tt td {
-        border: 1px solid #8f8f8f;
+    .planner-table th, .planner-table td {
+        border: 1px solid #D8E6F5;
         text-align: center;
         vertical-align: middle;
         padding: 0;
     }
-    .tt thead th {
-        background: #d9d9d9;
+    .planner-table thead th {
+        background: #123A63;
+        color: #FFFFFF;
         height: 54px;
-        font-size: 1.05rem;
+        font-size: 1.02rem;
         font-weight: 700;
     }
-    .tt .left-top {
-        width: 95px;
-        background: #d9d9d9;
+    .planner-table .left-top {
+        width: 90px;
+        background: #123A63;
+        color: #FFFFFF;
     }
-    .tt .period {
-        width: 95px;
-        background: #d9d9d9;
-        font-size: 1.4rem;
-        font-weight: 600;
+    .planner-table .row-head {
+        width: 90px;
+        background: #EEF6FF;
+        color: #123A63;
+        font-size: 1.2rem;
+        font-weight: 700;
         height: 92px;
     }
-    .tt .homeroom {
+    .planner-table .row-head.homeroom {
         font-size: 1rem;
     }
-    .tt .cell {
-        background: #eeeeee;
+    .planner-cell {
         height: 92px;
-        padding: 6px 8px;
+        padding: 8px 10px;
+        line-height: 1.28;
         word-break: keep-all;
         white-space: normal;
-        line-height: 1.25;
     }
-    .tt .class-name {
-        font-size: 1.15rem;
-        font-weight: 600;
-        color: #222;
+    .planner-cell.class-cell {
+        background: #EEF6FF;
     }
-    .tt .progress-text {
+    .planner-cell.todo-cell {
+        background: #FFFFFF;
+    }
+    .planner-cell.homeroom-cell {
+        background: #FFFFFF;
+    }
+    .planner-cell.empty-cell {
+        background: #FAFCFF;
+    }
+    .class-name {
+        color: #123A63;
+        font-size: 1.1rem;
+        font-weight: 700;
+    }
+    .class-content {
         margin-top: 4px;
+        color: #123A63;
         font-size: 0.9rem;
-        color: #303030;
     }
-    .tt .todo-text {
-        font-size: 0.92rem;
-        color: #2d4b67;
+    .todo-content {
+        color: #123A63;
+        font-size: 0.9rem;
         font-weight: 500;
     }
-    .tt .memo-text {
+    .todo-prefix {
+        font-weight: 700;
+    }
+    .homeroom-content {
+        color: #123A63;
         font-size: 0.9rem;
-        color: #5a5a5a;
+    }
+    .placeholder-class {
+        color: #123A63;
+        font-size: 1.05rem;
+        font-weight: 600;
     }
     </style>
-    <div class="tt-wrap">
-    <table class="tt">
+    <div class="planner-wrap">
+    <table class="planner-table">
         <thead>
             <tr>
                 <th class="left-top"></th>
@@ -459,17 +495,37 @@ def render_timetable_html(grid: pd.DataFrame) -> str:
     }
 
     for row_name in ROW_ORDER:
-        left_class = "period homeroom" if row_name == "종례" else "period"
+        left_class = "row-head homeroom" if row_name == "종례" else "row-head"
         html += f"<tr><td class='{left_class}'>{row_label_map[row_name]}</td>"
 
         for day in DAYS:
-            value = str(grid.at[row_name, day]).strip()
-            html += f"<td class='cell'>{value if value else ''}</td>"
+            cell = cells[(day, row_name)]
+            status = cell["status"]
+            class_name = str(cell["class_name"]).strip()
+            content = str(cell["content"]).strip()
+
+            if status == "class":
+                inner = f"<div class='class-name'>{class_name}</div>"
+                if content:
+                    inner += f"<div class='class-content'>{content}</div>"
+                css_class = "planner-cell class-cell"
+            elif status == "todo":
+                inner = f"<div class='todo-content'><span class='todo-prefix'>할 일</span><br>{content}</div>" if content else ""
+                css_class = "planner-cell todo-cell"
+            elif status == "homeroom":
+                inner = f"<div class='homeroom-content'>{content}</div>" if content else ""
+                css_class = "planner-cell homeroom-cell"
+            else:
+                inner = f"<div class='placeholder-class'>{class_name}</div>" if class_name else ""
+                css_class = "planner-cell empty-cell"
+
+            html += f"<td class='{css_class}'>{inner}</td>"
 
         html += "</tr>"
 
     html += "</tbody></table></div>"
     return html
+
 
 # -------------------------------------------------
 # 세션 상태
@@ -485,6 +541,7 @@ if "save_message_type" not in st.session_state:
 
 if "selected_week_start" not in st.session_state:
     st.session_state["selected_week_start"] = get_monday(date.today())
+
 
 # -------------------------------------------------
 # 저장 콜백
@@ -544,7 +601,6 @@ def save_day_planner(day: str) -> None:
                 }
             )
 
-    # 목표만 입력한 경우도 저장
     if not rows_to_add and goal_text:
         rows_to_add.append(
             {
@@ -582,37 +638,101 @@ def save_day_planner(day: str) -> None:
         f"(수업날짜: {lesson_date_str})"
     )
     st.session_state["save_message_type"] = "success"
-
     st.rerun()
 
+
 # -------------------------------------------------
-# 스타일
+# 디자인
 # -------------------------------------------------
 st.markdown(
     """
     <style>
+    :root {
+        --bg-white: #FFFFFF;
+        --navy: #123A63;
+        --soft-blue: #EEF6FF;
+    }
+
+    .stApp {
+        background: var(--bg-white);
+    }
+
     .main-title {
         font-size: 2rem;
-        font-weight: 700;
+        font-weight: 800;
+        color: var(--navy);
         margin-bottom: 0.2rem;
     }
+
     .sub-text {
-        color: #666666;
+        color: var(--navy);
+        opacity: 0.8;
         margin-bottom: 1rem;
     }
-    .block-wrap {
-        padding: 1rem;
-        border: 1px solid #e9ecef;
-        border-radius: 12px;
-        background-color: #fafafa;
+
+    .section-card {
+        background: var(--bg-white);
+        border: 1px solid var(--soft-blue);
+        border-radius: 16px;
+        padding: 1rem 1rem 0.8rem 1rem;
         margin-bottom: 1rem;
+        box-shadow: 0 2px 8px rgba(18,58,99,0.04);
     }
+
     .table-header {
+        color: var(--navy);
         font-weight: 700;
         padding-bottom: 0.35rem;
     }
-    .muted {
-        color: #777;
+
+    .free-label {
+        color: var(--navy);
+        opacity: 0.7;
+        font-weight: 600;
+    }
+
+    div[data-testid="stDateInput"] label,
+    div[data-testid="stTextInput"] label,
+    div[data-testid="stTextArea"] label,
+    div[data-testid="stSelectbox"] label {
+        color: var(--navy) !important;
+        font-weight: 700 !important;
+    }
+
+    div[data-testid="stTextInput"] input,
+    div[data-testid="stDateInput"] input,
+    div[data-testid="stTextArea"] textarea {
+        border-radius: 10px !important;
+        border: 1px solid var(--soft-blue) !important;
+        background: #FFFFFF !important;
+    }
+
+    div[data-testid="stTextInput"] input:focus,
+    div[data-testid="stDateInput"] input:focus,
+    div[data-testid="stTextArea"] textarea:focus {
+        border: 1px solid var(--navy) !important;
+        box-shadow: 0 0 0 1px var(--navy) !important;
+    }
+
+    .stButton > button {
+        width: 100%;
+        background: var(--navy) !important;
+        color: #FFFFFF !important;
+        border: none !important;
+        border-radius: 12px !important;
+        font-weight: 700 !important;
+        padding: 0.75rem 1rem !important;
+    }
+
+    .stButton > button:hover {
+        background: var(--navy) !important;
+        opacity: 0.92;
+    }
+
+    div[data-testid="stDataFrame"] {
+        border: 1px solid var(--soft-blue);
+        border-radius: 12px;
+        overflow: hidden;
     }
     </style>
     """,
@@ -624,7 +744,7 @@ st.markdown(
 # -------------------------------------------------
 st.markdown('<div class="main-title">📚 교사 일과 플래너</div>', unsafe_allow_html=True)
 st.markdown(
-    '<div class="sub-text">수업 진도, 공강 할 일, 오늘의 목표, 종례 내용을 주차별로 정리하세요.</div>',
+    '<div class="sub-text">수업 진도, 공강 할 일, 오늘의 주요 목표, 종례 사항을 주차별로 정리하세요.</div>',
     unsafe_allow_html=True,
 )
 
@@ -668,7 +788,7 @@ tabs = st.tabs(DAYS)
 for idx, day in enumerate(DAYS):
     with tabs[idx]:
         st.markdown(f"### {day}요일 입력")
-        st.markdown('<div class="block-wrap">', unsafe_allow_html=True)
+        st.markdown('<div class="section-card">', unsafe_allow_html=True)
 
         current_version = st.session_state["input_versions"][day]
         date_key = make_date_key(day, current_version)
@@ -681,24 +801,26 @@ for idx, day in enumerate(DAYS):
         if goal_key not in st.session_state:
             st.session_state[goal_key] = ""
 
-        st.date_input(
-            "수업 날짜 선택",
-            key=date_key,
-            value=st.session_state[date_key],
-        )
-
-        st.text_input(
-            "오늘의 주요 목표",
-            key=goal_key,
-            placeholder="예: 2-10 개념 이해 완료, 생활지도 점검, 공문 처리 마무리",
-        )
+        top1, top2 = st.columns([1.2, 2.8])
+        with top1:
+            st.date_input(
+                "수업 날짜 선택",
+                key=date_key,
+                value=st.session_state[date_key],
+            )
+        with top2:
+            st.text_input(
+                "오늘의 주요 목표",
+                key=goal_key,
+                placeholder="예: 개념 이해 완료, 채점 마무리, 학부모 연락 정리",
+            )
 
         st.markdown("")
-        header_cols = st.columns([1.0, 1.4, 4.8])
+
+        header_cols = st.columns([0.9, 1.4, 4.9])
         header_cols[0].markdown('<div class="table-header">교시</div>', unsafe_allow_html=True)
         header_cols[1].markdown('<div class="table-header">학급/구분</div>', unsafe_allow_html=True)
         header_cols[2].markdown('<div class="table-header">진도 또는 할 일</div>', unsafe_allow_html=True)
-
         st.markdown("---")
 
         for period in PERIODS:
@@ -708,15 +830,16 @@ for idx, day in enumerate(DAYS):
             if input_key not in st.session_state:
                 st.session_state[input_key] = ""
 
-            cols = st.columns([1.0, 1.4, 4.8])
+            cols = st.columns([0.9, 1.4, 4.9])
+
             cols[0].write(period.replace("교시", ""))
 
             if class_name:
                 cols[1].write(class_name)
                 placeholder = "예: 프랑스 혁명 서론"
             else:
-                cols[1].markdown('<span class="muted">공강</span>', unsafe_allow_html=True)
-                placeholder = "예: 생활기록부 정리, 학부모 연락, 수행평가 채점"
+                cols[1].markdown('<span class="free-label">공강</span>', unsafe_allow_html=True)
+                placeholder = "예: 생활기록부 정리, 평가 채점, 학부모 연락"
 
             cols[2].text_input(
                 label=f"{day} {period}",
@@ -729,19 +852,18 @@ for idx, day in enumerate(DAYS):
         if homeroom_key not in st.session_state:
             st.session_state[homeroom_key] = ""
 
-        st.markdown("#### 종례")
+        st.markdown("#### 종례 사항")
         st.text_area(
-            "종례",
+            "종례 사항",
             key=homeroom_key,
             label_visibility="collapsed",
             height=110,
-            placeholder="예: 숙제 공지, 준비물 안내, 생활지도 사항, 전달사항 등을 기록하세요.",
+            placeholder="예: 숙제 안내, 준비물 공지, 생활지도, 전달사항",
         )
 
         st.button(
             f"{day}요일 저장하기",
             key=f"save_button_{day}",
-            use_container_width=True,
             on_click=save_day_planner,
             args=(day,),
         )
@@ -758,8 +880,8 @@ st.caption(f"현재 조회 주차: {format_week_label(selected_week_start)}")
 goal_summary = build_goal_summary(selected_week_df)
 st.markdown(render_goal_summary_html(goal_summary), unsafe_allow_html=True)
 
-grid_df = build_timetable_grid(selected_week_df)
-st.markdown(render_timetable_html(grid_df), unsafe_allow_html=True)
+cells = build_timetable_cells(selected_week_df)
+st.markdown(render_timetable_html(cells), unsafe_allow_html=True)
 
 # -------------------------------------------------
 # 선택 주차 리스트
