@@ -39,7 +39,7 @@ CORE_COLS = ["수업날짜", "기록일시", "요일", "구분", "교시", "반"
 # -------------------------------------------------
 # 오늘 요일 계산
 # -------------------------------------------------
-def get_current_day_tab() -> str:
+def get_today_tab_label() -> str:
     weekday_idx = datetime.now().weekday()  # 월=0 ... 일=6
     if 0 <= weekday_idx <= 4:
         return DAYS[weekday_idx]
@@ -113,14 +113,19 @@ def ensure_file_exists() -> None:
 
 
 def append_rows_to_csv(new_df: pd.DataFrame) -> None:
+    """
+    기존 파일을 덮어쓰지 않고 추가 저장.
+    파일이 없으면 새로 만들고 헤더 포함, 있으면 mode='a'로 이어붙임.
+    """
     ensure_file_exists()
-    has_header = os.path.getsize(SAVE_FILE) > 0
+    file_has_data = os.path.getsize(SAVE_FILE) > 0
+
     new_df.to_csv(
         SAVE_FILE,
         mode="a",
-        header=not has_header,
+        header=not file_has_data,
         index=False,
-        encoding="utf-8-sig",
+        encoding="utf-8" if file_has_data else "utf-8-sig",
     )
 
 
@@ -183,6 +188,10 @@ def migrate_old_df(df: pd.DataFrame) -> pd.DataFrame:
 
 
 def load_log_data() -> pd.DataFrame:
+    """
+    파일이 있으면 무조건 불러오고, 없으면 새로 생성.
+    구조가 예전 버전이면 한 번 마이그레이션 후 다시 저장.
+    """
     ensure_file_exists()
 
     try:
@@ -230,10 +239,13 @@ def get_available_week_starts(df: pd.DataFrame) -> list[date]:
 
 
 def filter_df_by_week(df: pd.DataFrame, week_start: date) -> pd.DataFrame:
+    """
+    선택한 날짜(주차 시작일)가 포함된 월~금 범위만 표시
+    """
     if df.empty:
         return df.copy()
 
-    week_end = week_start + timedelta(days=4)
+    week_end = get_friday(week_start)
     mask = (
         df["수업날짜_dt"].notna()
         & (df["수업날짜_dt"].dt.date >= week_start)
@@ -247,6 +259,9 @@ def get_cell_default_label(day: str, period: str) -> str:
 
 
 def get_all_records_df(all_df: pd.DataFrame) -> pd.DataFrame:
+    """
+    전체 기록은 날짜와 상관없이 CSV의 모든 데이터 표시
+    """
     if all_df.empty:
         return pd.DataFrame(columns=["수업날짜", "요일", "구분", "교시", "학급", "유형", "목표", "내용"])
 
@@ -562,6 +577,19 @@ if "save_message_type" not in st.session_state:
 if "selected_week_start" not in st.session_state:
     st.session_state["selected_week_start"] = get_monday(date.today())
 
+# 최초 접속 시에만 현재 요일 탭 강제 초기화
+if "planner_day_tabs" not in st.session_state:
+    st.session_state["planner_day_tabs"] = get_today_tab_label()
+
+
+# -------------------------------------------------
+# 탭 변경 콜백
+# -------------------------------------------------
+def on_tab_change():
+    # st.tabs가 key를 통해 현재 탭 라벨을 session_state에 기록
+    # 별도 처리 없이 상태 유지
+    pass
+
 
 # -------------------------------------------------
 # 저장 콜백
@@ -639,12 +667,17 @@ def save_day_planner(day: str) -> None:
     if not rows_to_add:
         st.session_state["save_message"] = f"{day}요일은 저장할 내용이 없습니다."
         st.session_state["save_message_type"] = "warning"
+        st.session_state["planner_day_tabs"] = day
         st.rerun()
 
     new_df = pd.DataFrame(rows_to_add, columns=CORE_COLS)
     append_rows_to_csv(new_df)
 
+    # 저장한 날짜가 포함된 월~금 주차로 이동
     st.session_state["selected_week_start"] = get_monday(selected_lesson_date)
+
+    # 저장 후에도 방금 입력하던 요일 탭 유지
+    st.session_state["planner_day_tabs"] = day
 
     for key in used_keys:
         if key in st.session_state:
@@ -796,6 +829,8 @@ selected_week_start = st.selectbox(
 )
 
 st.session_state["selected_week_start"] = selected_week_start
+
+# 선택한 주차가 포함하는 월~금 전체 데이터
 selected_week_df = filter_df_by_week(prepared_df, selected_week_start)
 
 # -------------------------------------------------
@@ -803,7 +838,9 @@ selected_week_df = filter_df_by_week(prepared_df, selected_week_start)
 # -------------------------------------------------
 tabs = st.tabs(
     DAYS,
-    default=get_current_day_tab(),
+    default=st.session_state["planner_day_tabs"],
+    key="planner_day_tabs",
+    on_change="rerun",
 )
 
 for idx, day in enumerate(DAYS):
@@ -905,7 +942,7 @@ cells = build_timetable_cells(selected_week_df)
 st.markdown(render_timetable_html(cells), unsafe_allow_html=True)
 
 # -------------------------------------------------
-# 전체 기록 리스트: 날짜와 상관없이 전체 표시
+# 전체 기록 리스트: CSV 전체 데이터 최신순 표시
 # -------------------------------------------------
 st.markdown("---")
 st.markdown("## 전체 기록")
